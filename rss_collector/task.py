@@ -1,94 +1,60 @@
 from celery import shared_task, group
-from .models import Feed, Article
-from .utils import parse_feed
 from django.utils import timezone
-from django.db import IntegrityError, transaction
+from rss_collector.models import Feed
+from rss_collector.services import process_feeds 
 
-@shared_task
-def fetch_all_feeds():
-    feeds = Feed.objects.all()
-    total_new = 0
-    for feed in feeds:
-        entries = parse_feed(feed.url, last_fetched=feed.last_fetched)
-        new_count = 0
-        for entry in entries:
-            try:
-                with transaction.atomic():
-                    obj, created = Article.objects.get_or_create(
-                        url=entry["url"],
-                        defaults={
-                            "feed": feed,
-                            "title": entry.get("title") or "",
-                            "published_at": entry.get("published"),
-                            "content": entry.get("content") or "",
-                        },
-                    )
-                    if created:
-                        new_count += 1
-            except IntegrityError:
-                continue
-        feed.last_fetched = timezone.now()
-        feed.save(update_fields=["last_fetched"])
-        total_new += new_count
-    return f"Fetched {total_new} new articles."
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def fetch_feed(self, feed_id):
-    """
-    Task to fetch and save articles for a single feed.
-    Automatically retries on transient errors.
-    """
     try:
         feed = Feed.objects.get(id=feed_id)
     except Feed.DoesNotExist:
-        return f"⚠️ Feed {feed_id} not found."
+        return {"feed_id": feed_id, "error": "Feed not found"}
 
-    new_count = 0
     try:
-        entries = parse_feed(feed.url, last_fetched=feed.last_fetched)
+        result = process_feeds([feed]) 
+        return {
+            "feed_id": feed_id,
+            "feed_name": feed.name,
+            "added": result["details"][0]["added"],
+            "updated": result["details"][0]["updated"],
+        }
     except Exception as e:
         raise self.retry(exc=e, countdown=10)
 
-    for entry in entries:
-        try:
-            with transaction.atomic():
-                _, created = Article.objects.get_or_create(
-                    url=entry["url"],
-                    defaults={
-                        "feed": feed,
-                        "title": entry.get("title") or "",
-                        "published_at": entry.get("published"),
-                        "content": entry.get("content") or "",
-                    },
-                )
-                if created:
-                    new_count += 1
-        except IntegrityError:
-            continue
 
-    feed.last_fetched = timezone.now()
-    feed.save(update_fields=["last_fetched"])
+@shared_task
+def fetch_all_feeds():
+    """
+    Fetch all feeds stored in DB using process_feeds().
+    This runs synchronously (non-batched).
+    """
+    from rss_collector.models import Feed
 
-    return f"✅ {feed.name}: {new_count} new articles"
+    feeds = Feed.objects.all().order_by("id")
+    result = process_feeds(feeds)
+    total = result["total_new"]
+    updated = sum(r["updated"] for r in result["details"])
+    return f"✅ Total feeds processed: {len(feeds)}, New: {total}, Updated: {updated}"
+
 
 @shared_task
 def fetch_feeds_in_batches(batch_size=100):
     """
-    Divides all feeds into batches (e.g., 100 feeds per batch)
-    and processes each batch in parallel using Celery groups.
+    Split feeds into batches
+    and process each batch concurrently using Celery group().
     """
     feed_ids = list(Feed.objects.values_list("id", flat=True))
     total_feeds = len(feed_ids)
     if not total_feeds:
-        return "No feeds available."
+        return "⚠️ No feeds available."
 
-    # Split feed_ids into batches
     batches = [feed_ids[i:i + batch_size] for i in range(0, total_feeds, batch_size)]
     batch_count = len(batches)
 
     for index, batch in enumerate(batches, start=1):
         job = group(fetch_feed.s(feed_id) for feed_id in batch)
         job.apply_async()
-        print(f"🚀 Dispatched batch {index}/{batch_count} with {len(batch)} feeds")
+        print(f"🚀 Dispatched batch {index}/{batch_count} ({len(batch)} feeds)")
 
-    return f"✅ Dispatched {batch_count} batches ({total_feeds} feeds total)"
+    return f"✅ {batch_count} batches dispatched for {total_feeds} feeds."

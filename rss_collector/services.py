@@ -12,35 +12,72 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
     total_new = 0
     feed_results = []
 
+    if isinstance(start_date, str):
+        try:
+            start_date = datetime.fromisoformat(start_date)
+        except Exception:
+            start_date = None
+
+    if isinstance(end_date, str):
+        try:
+            end_date = datetime.fromisoformat(end_date)
+        except Exception:
+            end_date = None
+
     for feed in feeds:
-        # handle Feed model or dict
-        feed_url = getattr(feed, "url", None) or feed.get("url")
-        feed_name = getattr(feed, "name", None) or feed.get("name") or feed_url.split("/")[2]
-        feed_last_fetched = getattr(feed, "last_fetched", None) or None
+        if not hasattr(feed, "id"):
+            continue
+
+        if not feed.name or not feed.url:
+            feed_results.append({
+                "feed": getattr(feed, "url", "Unknown"),
+                "error": "Missing required fields (name or URL), skipping.",
+                "added": 0,
+                "updated": 0
+            })
+            continue
+
+        if not feed.config:
+            feed_results.append({
+                "feed": feed.name,
+                "error": "Missing parser config, skipping feed.",
+                "added": 0,
+                "updated": 0
+            })
+            continue
+
+        feed_name = feed.name
+        feed_url = feed.url
+        feed_config = feed.config
+        feed_last_fetched = feed.last_fetched
+
         new_count = 0
         updated_count = 0
 
         try:
             entries = parse_feed(
                 feed_url,
+                config=feed_config,
                 last_fetched=feed_last_fetched,
                 max_entries=max_entries,
                 start_date=start_date,
                 end_date=end_date
             )
         except Exception as e:
-            feed_results.append({"feed": feed_name, "error": str(e), "added": 0})
+            feed_results.append({
+                "feed": feed_name,
+                "error": f"Failed to parse feed: {str(e)}",
+                "added": 0,
+                "updated": 0
+            })
             continue
-
-        # Ensure a Feed record exists
-        db_feed, _ = Feed.objects.get_or_create(
-            url=feed_url,
-            defaults={"name": feed_name, "last_fetched": timezone.now()}
-        )
 
         # Save new articles
         for entry in entries:
-            article_url = entry["url"]
+            article_url = entry.get("url")
+            if not article_url:
+                continue
+
             title = entry.get("title") or ""
             published = entry.get("published")
             content = entry.get("content") or ""
@@ -53,7 +90,7 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
                     article, created = Article.objects.get_or_create(
                         url=article_url,
                         defaults={
-                            "feed": db_feed,
+                            "feed": feed,
                             "title": title,
                             "published_at": published,
                             "content": content,
@@ -74,29 +111,19 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
                                 return sorted(old_value) != sorted(new_value)
                             return (old_value or "").strip() != (new_value or "").strip()
                         
-                        if has_changed("title", title):
-                            article.title = title
-                            updated_fields.append("title")
+                        for field, new_value in {
+                            "title": title,
+                            "content": content,
+                            "authors": authors,
+                            "categories": categories,
+                            "meta_keywords": meta_keywords,
+                        }.items():
+                            if has_changed(field, new_value):
+                                setattr(article, field, new_value)
+                                updated_fields.append(field)
 
-                        if has_changed("content", content):
-                            article.content = content
-                            updated_fields.append("content")
-
-                        if has_changed("authors", authors):
-                            article.authors = authors
-                            updated_fields.append("authors")
-
-                        if has_changed("categories", categories):
-                            article.categories = categories
-                            updated_fields.append("categories")
-
-                        if has_changed("meta_keywords", meta_keywords):
-                            article.meta_keywords = meta_keywords
-                            updated_fields.append("meta_keywords")
-
-                        new_published = published
-                        if (new_published and (not article.published_at or new_published > article.published_at)):
-                            article.published_at = new_published
+                        if published and (not article.published_at or published > article.published_at):
+                            article.published_at = published
                             updated_fields.append("published_at")
 
                         if updated_fields:
@@ -105,12 +132,20 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
             except IntegrityError:
                 continue
 
-        db_feed.last_fetched = timezone.now()
-        db_feed.save(update_fields=["last_fetched"])
+        feed.last_fetched = timezone.now()
+        feed.save(update_fields=["last_fetched"])
+        feed_results.append({
+            "feed": feed_name,
+            "added": new_count,
+            "updated": updated_count,
+            "total_articles": len(entries)
+        })
         total_new += new_count
-        feed_results.append({"feed": feed_name, "added": new_count, "updated": updated_count})
 
-    return {"total_new": total_new, "details": feed_results}
+    return {
+        "total_new": total_new,
+        "details": feed_results
+    }
 
 def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_date=None):
     """
