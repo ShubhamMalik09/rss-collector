@@ -4,7 +4,7 @@ from django.db import transaction, IntegrityError
 from rss_collector.models import Feed, Article
 from rss_collector.utils import parse_feed
 
-def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
+def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, update_last_fetched=False):
     """
     Common logic for processing a list of feed objects or feed-like dicts.
     Each feed should have 'name' and 'url' attributes or keys.
@@ -12,22 +12,17 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
     total_new = 0
     feed_results = []
 
-    if isinstance(start_date, str):
-        try:
-            start_date = datetime.fromisoformat(start_date)
-        except Exception:
-            start_date = None
-
-    if isinstance(end_date, str):
-        try:
-            end_date = datetime.fromisoformat(end_date)
-        except Exception:
-            end_date = None
+    if start_date:
+        start_date = datetime.strptime(start_date, "%Y-%m-%d")
+        if timezone.is_naive(start_date):
+            start_date = timezone.make_aware(start_date)
+    
+    if end_date:
+        end_date = datetime.strptime(end_date, "%Y-%m-%d")
+        if timezone.is_naive(end_date):
+            end_date = timezone.make_aware(end_date)
 
     for feed in feeds:
-        if not hasattr(feed, "id"):
-            continue
-
         if not feed.name or not feed.url:
             feed_results.append({
                 "feed": getattr(feed, "url", "Unknown"),
@@ -37,18 +32,8 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
             })
             continue
 
-        if not feed.config:
-            feed_results.append({
-                "feed": feed.name,
-                "error": "Missing parser config, skipping feed.",
-                "added": 0,
-                "updated": 0
-            })
-            continue
-
         feed_name = feed.name
         feed_url = feed.url
-        feed_config = feed.config
         feed_last_fetched = feed.last_fetched
 
         new_count = 0
@@ -56,8 +41,7 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
 
         try:
             entries = parse_feed(
-                feed_url,
-                config=feed_config,
+                feed,
                 last_fetched=feed_last_fetched,
                 max_entries=max_entries,
                 start_date=start_date,
@@ -131,9 +115,11 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
                             updated_count += 1
             except IntegrityError:
                 continue
+        
+        if update_last_fetched:
+            feed.last_fetched = timezone.now()
+            feed.save(update_fields=["last_fetched"])
 
-        feed.last_fetched = timezone.now()
-        feed.save(update_fields=["last_fetched"])
         feed_results.append({
             "feed": feed_name,
             "added": new_count,
@@ -147,7 +133,7 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None):
         "details": feed_results
     }
 
-def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_date=None):
+def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_date=None, update_last_fetched=False):
     """
     Fetch feeds stored in DB and process them via process_feeds().
     """
@@ -159,7 +145,8 @@ def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_dat
         feeds=feeds,
         max_entries=max_entries,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        update_last_fetched=update_last_fetched
     )
 
 def fetch_custom_feeds(urls, max_entries=None, start_date=None, end_date=None):
@@ -172,5 +159,6 @@ def fetch_custom_feeds(urls, max_entries=None, start_date=None, end_date=None):
         feeds=feeds,
         max_entries=max_entries,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        update_last_fetched=False
     )

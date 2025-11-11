@@ -6,72 +6,96 @@ from django.utils import timezone
 import requests
 import re
 from bs4 import BeautifulSoup
+from markdownify import markdownify as html_to_md
 
-def parse_feed(feed_url, config, last_fetched=None, max_entries=None, start_date=None, end_date=None):
+def clean_to_markdown(content: str) -> str:
+    """
+    Converts HTML or plain text into clean Markdown format.
+    Ensures consistent storage.
+    """
+    if not content:
+        return ""
+    try:
+        return html_to_md(content, strip=["script", "style"]).strip()
+    except Exception:
+        # fallback if content is already plain text
+        return content.strip()
 
-    config = config or {}
-    parser_type = config.get("parser_type", "generic")
+def parse_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_date=None):
+
+    if not feed or not feed.url:
+        raise ValueError("Invalid Feed object: missing URL")
+
+    parser_type = getattr(feed, "parser_type", "generic").lower().strip()
 
     if parser_type == "generic":
-        return parse_generic_feed(feed_url, config, last_fetched, max_entries, start_date, end_date)
+        return parse_generic_feed(feed, last_fetched, max_entries, start_date, end_date)
     elif parser_type == 'json_feed':
-        return parse_json_feed(feed_url, config, last_fetched, max_entries, start_date, end_date)
+        return parse_json_feed(feed, last_fetched, max_entries, start_date, end_date)
     elif parser_type == "article":
-        return parse_html_feed(feed_url, config, last_fetched, max_entries, start_date, end_date)
+        return parse_html_feed(feed, last_fetched, max_entries, start_date, end_date)
     else:
         raise ValueError(f"Unknown parser type: {parser_type}")
 
-def parse_generic_feed(feed_url, config, last_fetched=None, max_entries=None, start_date=None, end_date=None):
-    config = config or {}
-    field_map = config.get("field_mapping", {})
-    extract_full_content = config.get("extract_full_content", False)
+def parse_generic_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_date=None):
+
+    date_format = feed.date_format or "%a, %d %b %Y %H:%M:%S %z"
+    extract_full_content = getattr(feed, "extract_full_content", False)
 
     try:
-        xml_text = requests.get(feed_url, timeout=10).text
-        parsed = feedparser.parse(xml_text)
+        response = requests.get(feed.url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        xml_text = response.text
     except Exception as e:
-        print(f"[parse_generic_feed] Failed to fetch {feed_url}: {e}")
+        print(f"[parse_generic_feed] Failed to fetch {feed.url}: {e}")
         return []
 
-    entries = parsed.entries or []
+    soup = BeautifulSoup(xml_text, "xml")
+    entries = soup.find_all("item") or soup.find_all("entry")
+    if not entries:
+        print(f"[parse_generic_feed] No <item> tags found in {feed.url}")
+        return []
+
     if max_entries:
         entries = entries[:max_entries]
 
     results = []
 
+    url_tag = feed.url_field
+    title_tag = feed.title_field
+    desc_tag = getattr(feed, "description_field", None) 
+    content_tag = feed.content_field 
+    author_tag = feed.author_field
+    published_tag = feed.published_field
+    categories_tag = feed.categories_field
     for entry in entries:
         try:
-            url_field = field_map.get("url")
-            title_field = field_map.get("title")
-            desc_field = field_map.get("description")
-            author_field = field_map.get("author")
-            published_field = field_map.get("published_date")
-            categories_field = field_map.get("categories", "tags")
+            def get_text(tag_name):
+                tag = entry.find(tag_name)
+                return tag.get_text(strip=True) if tag else ""
+            
+            url = get_text(url_tag)
+            title = get_text(title_tag)
+            description = get_text(desc_tag)
+            author = get_text(author_tag)
+            content = get_text(content_tag) or description
 
-            url = entry.get(url_field) if url_field else None
-            if not url:
-                continue
-
-            title = (entry.get(title_field) or "").strip() if title_field else ""
-            description = (entry.get(desc_field) or "").strip() if desc_field else ""
-            author = (entry.get(author_field) or "").strip() if author_field else ""
-
-
+            categories = []
+            for cat_tag in entry.find_all(categories_tag):
+                text = cat_tag.get_text(strip=True)
+                if text:
+                    categories.append(text)
+            
             published = None
-            if published_field:
-                pub_raw = entry.get(published_field)
-                if isinstance(pub_raw, time.struct_time):
-                    published = datetime(*pub_raw[:6])
-                elif isinstance(pub_raw, str):
-                    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S%z"):
-                        try:
-                            published = datetime.strptime(pub_raw, fmt)
-                            break
-                        except Exception:
-                            continue
-
-            if published and timezone.is_naive(published):
-                published = timezone.make_aware(published)
+            pub_raw = get_text(published_tag)
+            if pub_raw:
+                pub_raw = pub_raw.strip()
+                try:
+                    published = datetime.strptime(pub_raw, date_format)
+                    if timezone.is_naive(published):
+                        published = timezone.make_aware(published)
+                except Exception:
+                    pass
             
             if start_date and published and published < start_date:
                 continue
@@ -79,21 +103,10 @@ def parse_generic_feed(feed_url, config, last_fetched=None, max_entries=None, st
                 continue
             if last_fetched and not start_date and published and published <= last_fetched:
                 continue
-            
-            content = description
-            authors = [author] if author else []
-            meta_keywords = []
-            categories = []
 
-            tags_data = entry.get(categories_field)
-            if tags_data:
-                if isinstance(tags_data, list):
-                    categories = [
-                        t.get("term") for t in tags_data if isinstance(t, dict) and t.get("term")
-                    ]
-                elif isinstance(tags_data, str):
-                    categories = [tags_data]
-            
+            meta_keywords = []
+            authors = [author] if author else []
+
             if extract_full_content:
                 try:
                     article = NewspaperArticle(url)
@@ -113,6 +126,8 @@ def parse_generic_feed(feed_url, config, last_fetched=None, max_entries=None, st
                         pass
                 except Exception as e:
                     print(f"[parse_generic_feed] Newspaper3k failed for {url}: {e}")
+            
+            content = clean_to_markdown(content)
 
             results.append({
                 "url": url,
@@ -121,7 +136,7 @@ def parse_generic_feed(feed_url, config, last_fetched=None, max_entries=None, st
                 "content": content,
                 "authors": authors,
                 "categories": categories,
-                "meta_keywords": meta_keywords or categories,
+                "meta_keywords": meta_keywords,
                 "published": published,
             })
         except Exception as e:
@@ -130,112 +145,102 @@ def parse_generic_feed(feed_url, config, last_fetched=None, max_entries=None, st
 
     return results
 
-def parse_html_feed(feed_url, config, last_fetched=None, max_entries=None, start_date=None, end_date=None):
+def parse_html_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_date=None):
 
-    if not config or "article_config" not in config:
-        print(f"[parse_article_feed] Missing article_config for {feed_url}")
+    date_format = feed.date_format or "%Y-%m-%dT%H:%M:%S%z"
+
+    try:
+        response = requests.get(feed.url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        html_text = response.text
+    except Exception as e:
+        print(f"[parse_html_feed] Failed to fetch {feed.url}: {e}")
+        return []
+    
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    article_selector = getattr(feed, "article_selector", None)
+    if not article_selector:
+        print(f"[parse_html_feed] Missing 'article_selector' for {feed.url}")
         return []
 
-    article_config = config.get("article_config", {})
-    urls = config.get("urls", [])
-    if not urls:
-        print(f"[parse_article_feed] No URLs provided in config for {feed_url}")
+    article_blocks = soup.select(article_selector)
+    if not article_blocks:
+        print(f"[parse_html_feed] No article blocks found for {feed.url}")
         return []
-
+    
     if max_entries:
-        urls = urls[:max_entries]
+        article_blocks = article_blocks[:max_entries]
 
     results = []
 
-    for url in urls:
+    url_selector = getattr(feed, "url_field", None)
+    title_selector = getattr(feed, "title_field", None)
+    content_selector = getattr(feed, "content_field", None)
+    author_selector = getattr(feed, "author_field", None)
+    published_selector = getattr(feed, "published_field", None)
+    categories_selector = getattr(feed, "categories_field", None)
+
+    for block in article_blocks:
         try:
-            response = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            if response.status_code != 200:
-                print(f"[parse_article_feed] Failed to fetch {url} ({response.status_code})")
-                continue
+            url = ""
+            if url_selector:
+                el = block.select_one(url_selector)
+                if el:
+                    url = el.get("href") or el.get("content") or el.get_text(strip=True)
 
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            title_selector = article_config.get("title")
             title = ""
             if title_selector:
-                el = soup.select_one(title_selector)
+                el = block.select_one(title_selector)
                 if el:
                     title = el.get("content") or el.get_text(strip=True)
             
-            author_selector = article_config.get("author")
             author = ""
             if author_selector:
-                el = soup.select_one(author_selector)
+                el = block.select_one(author_selector)
                 if el:
                     author = el.get("content") or el.get_text(strip=True)
             
-            content_selector = article_config.get("content")
             content = ""
             if content_selector:
-                els = soup.select(content_selector)
-                if els:
-                    parts = []
-                    for e in els:
-                        text = e.get_text(strip=True)
-                        if text:
-                            parts.append(text)
-                    content = "\n".join(parts).strip()
+                content_parts = []
+                for el in block.select(content_selector):
+                    text = el.get_text(strip=True)
+                    if text:
+                        content_parts.append(text)
+                content = "\n".join(content_parts).strip()
             
-            keywords_selector = article_config.get("keywords")
-            keywords = []
-            if keywords_selector:
-                el = soup.select_one(keywords_selector)
-                if el:
-                    kw_content = el.get("content") or el.get_text(strip=True)
-                    if kw_content:
-                        if "," in kw_content:
-                            keywords = [k.strip() for k in kw_content.split(",") if k.strip()]
-                        else:
-                            keywords = [kw_content.strip()]
-            
-            category_selector = article_config.get("categories")
             categories = []
-            if category_selector:
-                el = soup.select_one(category_selector)
-                if el:
-                    temp = []
-                    for el in els:
-                        val = el.get("content") or el.get_text(strip=True)
-                        if not val:
-                            continue
-                        if "," in val:
-                            temp += [c.strip() for c in val.split(",") if c.strip()]
-                        else:
-                            temp.append(val.strip())
-                    seen = set()
-                    categories = [c for c in temp if not (c in seen or seen.add(c))]
+            if categories_selector:
+                cat_els = block.select(categories_selector)
+                if cat_els:
+                    categories = list({
+                        c.get_text(strip=True)
+                        for c in cat_els if c.get_text(strip=True)
+                    })
             
-            published_selector = article_config.get("published_date")
             published = None
             if published_selector:
-                el = soup.select_one(published_selector)
-                pub_raw = None
+                el = block.select_one(published_selector)
                 if el:
                     pub_raw = el.get("content") or el.get_text(strip=True)
-                if pub_raw:
-                    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%a, %d %b %Y %H:%M:%S %Z"):
+                    if pub_raw:
                         try:
-                            published = datetime.strptime(pub_raw, fmt)
-                            break
+                            published = datetime.strptime(pub_raw, date_format)
+                            if timezone.is_naive(published):
+                                published = timezone.make_aware(published)
                         except Exception:
-                            continue
-                    if published and timezone.is_naive(published):
-                        published = timezone.make_aware(published)
-
+                            pass
+            
             if start_date and published and published < start_date:
                 continue
             if end_date and published and published > end_date:
                 continue
             if last_fetched and not start_date and published and published <= last_fetched:
                 continue
-            
+
             summary = content[:300] + "..." if len(content) > 300 else content
+
             results.append({
                 "url": url,
                 "title": title,
@@ -243,7 +248,7 @@ def parse_html_feed(feed_url, config, last_fetched=None, max_entries=None, start
                 "content": content,
                 "authors": [author] if author else [],
                 "categories": categories,
-                "meta_keywords": keywords,
+                "meta_keywords": categories,
                 "published": published,
             })
 
@@ -263,6 +268,7 @@ def parse_json_feed(feed_url, config, last_fetched=None, max_entries=None, start
     feed_endpoint = api_config.get("url", feed_url)
     field_map = api_config.get("field_mapping", {})
     items_path = api_config.get("items_path", "items")
+    date_format = api_config.get("date_format") or "%a, %d %b %Y %H:%M:%S %Z"
 
     try:
         response = requests.get(feed_endpoint, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
@@ -363,14 +369,13 @@ def parse_json_feed(feed_url, config, last_fetched=None, max_entries=None, start
                         break
                 pub_raw = obj
                 if isinstance(pub_raw, str):
-                    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ"):
-                        try:
-                            published = datetime.strptime(pub_raw, fmt)
-                            break
-                        except Exception:
-                            continue
-                    if published and timezone.is_naive(published):
-                        published = timezone.make_aware(published)
+                    try:
+                        published = datetime.strptime(pub_raw, date_format)
+                    except Exception:
+                        print(f"[parse_json_feed] Failed to parse date '{pub_raw}' using '{date_format}'")
+
+            if published and timezone.is_naive(published):
+                published = timezone.make_aware(published)
 
             categories = []
             if field_map.get("categories"):

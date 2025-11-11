@@ -1,14 +1,41 @@
 from django.db import models
+from datetime import timedelta, datetime, timezone
 
 # Create your models here.
 class Feed(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(unique=True)
     last_fetched = models.DateTimeField(null=True, blank=True)
-    config = models.JSONField(default=dict, blank=True) 
+
+    url_field = models.CharField(max_length=100, default="link")
+    title_field = models.CharField(max_length=100, default="title")
+    description_field = models.CharField(max_length=100, default="description")
+    content_field = models.CharField(max_length=100, default="content:encoded")
+    author_field = models.CharField(max_length=100, default="dc:creator")
+    published_field = models.CharField(max_length=100, default="pubDate")
+    categories_field = models.CharField(max_length=100, default="category")
+    date_format = models.CharField(max_length=100,default="%a, %d %b %Y %H:%M:%S %z")
+
+    parser_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('generic', 'Generic Parser')
+        ],
+        default='generic'
+    )
+
+    call_frequency = models.PositiveIntegerField(default=10) 
+    extract_full_content = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
+    
+    def should_fetch(self):
+        """Returns True if feed is due for fetching."""
+        if not self.last_fetched:
+            return True
+        next_fetch_time = self.last_fetched + timedelta(minutes=self.call_frequency)
+        return datetime.now(timezone.utc) >= next_fetch_time
 
 class Article(models.Model):
     feed = models.ForeignKey(Feed, on_delete=models.CASCADE, related_name='articles')

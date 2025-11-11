@@ -11,9 +11,40 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} — {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "feed_file": {
+            "level": "INFO",
+            "class": "logging.FileHandler",
+            "filename": os.path.join(BASE_DIR, "feed_tasks.log"),
+            "formatter": "verbose",
+        },
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "rss_collector": {
+            "handlers": ["feed_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
 
 
 # Quick-start development settings - unsuitable for production
@@ -39,7 +70,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',     
     'rss_collector',       
-
+    "django_celery_beat",
+    "django_celery_results",
 ]
 
 MIDDLEWARE = [
@@ -102,24 +134,13 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-CELERY_BROKER_URL = "django://"       # message queue
-CELERY_RESULT_BACKEND = "django-db"   # store results
-# CELERY_BROKER_URL = "memory://"   #For not storing any results to db
-# CELERY_RESULT_BACKEND = "cache+memory://"
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = 'Asia/Kolkata'
+CELERY_BROKER_URL = "sqla+sqlite:///celerydb.sqlite3"
+CELERY_RESULT_BACKEND = "django-db"
 
-from celery.schedules import crontab
-
-CELERY_BEAT_SCHEDULE = {
-    'fetch-feeds-in-batches-every-10-minutes': {
-        'task': 'rss_collector.tasks.fetch_feeds_in_batches',
-        'schedule': 600.0,  # every 10 minutes
-        'args': (100,),  # batch size
-    },
-}
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Asia/Kolkata"
 
 
 # Internationalization
