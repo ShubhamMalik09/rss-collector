@@ -2,8 +2,11 @@ beautifulsoup4==4.14.2
 Django==5.1.4
 djangorestframework==3.16.0
 feedparser==6.0.12
+markdownify==0.14.1
 newspaper3k==0.2.8
 Requests==2.32.5
 celery>=5.4.0
 redis>=5.0.0
 lxml>=5.2.2
+django-celery-beat>=2.6
+django-celery-results>=2.6
