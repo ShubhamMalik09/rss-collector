@@ -232,6 +232,8 @@ def parse_html_feed(feed_url, config, last_fetched=None, max_entries=None, start
                 continue
             if end_date and published and published > end_date:
                 continue
+            if last_fetched and not start_date and published and published <= last_fetched:
+                continue
             
             summary = content[:300] + "..." if len(content) > 300 else content
             results.append({
@@ -394,6 +396,8 @@ def parse_json_feed(feed_url, config, last_fetched=None, max_entries=None, start
             if start_date and published and published < start_date:
                 continue
             if end_date and published and published > end_date:
+                continue
+            if last_fetched and not start_date and published and published <= last_fetched:
                 continue
 
             results.append({

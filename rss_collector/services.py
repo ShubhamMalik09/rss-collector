@@ -166,7 +166,7 @@ def fetch_custom_feeds(urls, max_entries=None, start_date=None, end_date=None):
     """
     Fetch custom list of RSS URLs provided by user and process via process_feeds().
     """
-    feeds = [{"url": url, "name": url.split("/")[2]} for url in urls]
+    feeds = Feed.objects.filter(url__in=urls).order_by("id")
 
     return process_feeds(
         feeds=feeds,
