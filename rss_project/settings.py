@@ -19,12 +19,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+
     "formatters": {
         "verbose": {
-            "format": "[{asctime}] {levelname} — {message}",
+            "format": "[{asctime}] {levelname} — {name}: {message}",
             "style": "{",
         },
     },
+
     "handlers": {
         "feed_file": {
             "level": "INFO",
@@ -37,11 +39,24 @@ LOGGING = {
             "formatter": "verbose",
         },
     },
+
     "loggers": {
         "rss_collector": {
             "handlers": ["feed_file", "console"],
             "level": "INFO",
             "propagate": False,
+        },
+
+        "celery": {
+            "handlers": ["feed_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        "django": {
+            "handlers": ["feed_file", "console"],
+            "level": "WARNING",
+            "propagate": True,
         },
     },
 }
