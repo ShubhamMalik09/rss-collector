@@ -33,7 +33,7 @@ class Feed(models.Model):
     
     def schedule_next_fetch(self):
         """Set next_fetch based on refresh interval."""
-        self.next_fetch = timezone.now() + timedelta(minutes=self.refresh_interval)
+        self.next_fetch = timezone.now() + timedelta(minutes=self.call_frequency)
         self.save(update_fields=["next_fetch"])
 
 class Article(models.Model):
