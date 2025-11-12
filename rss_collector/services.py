@@ -33,7 +33,6 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
             continue
 
         feed_name = feed.name
-        feed_url = feed.url
         feed_last_fetched = feed.last_fetched
 
         new_count = 0
@@ -56,69 +55,84 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
             })
             continue
 
-        # Save new articles
-        for entry in entries:
-            article_url = entry.get("url")
-            if not article_url:
-                continue
+        entry_urls = [entry.get("url") for entry in entries if entry.get("url")]
+        existing_articles = Article.objects.filter(url__in=entry_urls).all()
+        existing_urls = [a.url for a in existing_articles]
 
-            title = entry.get("title") or ""
-            published = entry.get("published")
-            content = entry.get("content") or ""
-            authors = entry.get("authors", [])
-            categories = entry.get("categories", [])
-            meta_keywords = entry.get("meta_keywords", [])
+        new_entries = [e for e in entries if e.get("url") not in existing_urls]
+        existing_entries = [e for e in entries if e.get("url") in existing_urls]
 
+        new_objects = [
+            Article(
+                feed=feed,
+                url=e["url"],
+                title=e.get("title", ""),
+                published_at=e.get("published"),
+                content=e.get("content", ""),
+                authors=e.get("authors", []),
+                categories=e.get("categories", []),
+                meta_keywords=e.get("meta_keywords", []),
+            )
+            for e in new_entries
+        ]
+
+        if new_objects:
             try:
-                with transaction.atomic():
-                    article, created = Article.objects.get_or_create(
-                        url=article_url,
-                        defaults={
-                            "feed": feed,
-                            "title": title,
-                            "published_at": published,
-                            "content": content,
-                            "authors": authors,
-                            "categories": categories,
-                            "meta_keywords": meta_keywords,
-                        },
-                    )
-                    if created:
-                        new_count += 1
-                    else:
-                        updated_fields = []
-
-                        def has_changed(field, new_value):
-                            """Compare normalized values safely."""
-                            old_value = getattr(article, field, None)
-                            if isinstance(old_value, list) and isinstance(new_value, list):
-                                return sorted(old_value) != sorted(new_value)
-                            return (old_value or "").strip() != (new_value or "").strip()
-                        
-                        for field, new_value in {
-                            "title": title,
-                            "content": content,
-                            "authors": authors,
-                            "categories": categories,
-                            "meta_keywords": meta_keywords,
-                        }.items():
-                            if has_changed(field, new_value):
-                                setattr(article, field, new_value)
-                                updated_fields.append(field)
-
-                        if published and (not article.published_at or published > article.published_at):
-                            article.published_at = published
-                            updated_fields.append("published_at")
-
-                        if updated_fields:
-                            article.save(update_fields=updated_fields)
-                            updated_count += 1
+                Article.objects.bulk_create(new_objects, ignore_conflicts=True)
+                new_count = len(new_objects)
             except IntegrityError:
+                new_count = 0
+        
+        updated_articles = []
+        for entry in existing_entries:
+            url = entry.get("url")
+
+            article = None
+            for a in existing_articles:
+                if a.url == url:
+                    article = a
+                    break
+            if not article:
                 continue
+
+            changed = False
+
+            def has_changed(field, new_value):
+                old_value = getattr(article, field, None)
+                if isinstance(old_value, list) and isinstance(new_value, list):
+                    return old_value != new_value
+                return (old_value or "").strip() != (new_value or "").strip()
+
+            for field, new_value in {
+                "title": entry.get("title", ""),
+                "content": entry.get("content", ""),
+                "authors": entry.get("authors", []),
+                "categories": entry.get("categories", []),
+                "meta_keywords": entry.get("meta_keywords", []),
+            }.items():
+                if has_changed(field, new_value):
+                    setattr(article, field, new_value)
+                    changed = True
+
+            published = entry.get("published")
+            if published and (not article.published_at or published > article.published_at):
+                article.published_at = published
+                changed = True
+
+            if changed:
+                updated_articles.append(article)
+
+        if updated_articles:
+            Article.objects.bulk_update(
+                updated_articles,
+                ["title", "content", "authors", "categories", "meta_keywords", "published_at"]
+            )
+            updated_count = len(updated_articles)
         
         if update_last_fetched:
             feed.last_fetched = timezone.now()
             feed.save(update_fields=["last_fetched"])
+            feed.schedule_next_fetch()
 
         feed_results.append({
             "feed": feed_name,

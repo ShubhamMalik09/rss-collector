@@ -6,6 +6,7 @@ class Feed(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(unique=True)
     last_fetched = models.DateTimeField(null=True, blank=True)
+    next_fetch = models.DateTimeField(null=True, blank=True)
 
     url_field = models.CharField(max_length=100, default="link")
     title_field = models.CharField(max_length=100, default="title")
@@ -30,12 +31,10 @@ class Feed(models.Model):
     def __str__(self):
         return self.name
     
-    def should_fetch(self):
-        """Returns True if feed is due for fetching."""
-        if not self.last_fetched:
-            return True
-        next_fetch_time = self.last_fetched + timedelta(minutes=self.call_frequency)
-        return datetime.now(timezone.utc) >= next_fetch_time
+    def schedule_next_fetch(self):
+        """Set next_fetch based on refresh interval."""
+        self.next_fetch = timezone.now() + timedelta(minutes=self.refresh_interval)
+        self.save(update_fields=["next_fetch"])
 
 class Article(models.Model):
     feed = models.ForeignKey(Feed, on_delete=models.CASCADE, related_name='articles')

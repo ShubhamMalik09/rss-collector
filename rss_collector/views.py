@@ -3,7 +3,7 @@ from rest_framework.decorators import api_view
 from rest_framework import status
 from .services import fetch_all_feeds, fetch_custom_feeds
 from .utils import parse_feed
-from .models import Article
+from .models import Article, Feed
 from datetime import datetime
 
 @api_view(['GET'])
@@ -30,6 +30,18 @@ def test_feed_parser(request):
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+def reset_last_fetched(request):
+    """
+    Sets last_fetched = None for all Feed records.
+    Use only for admin/debugging purposes.
+    """
+    updated_count = Feed.objects.update(last_fetched=None)
+    return Response({
+        "status": "success",
+        "message": f"Reset last_fetched for {updated_count} feeds."
+    }, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
 def fetch_feeds_view(request):

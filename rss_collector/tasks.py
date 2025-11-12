@@ -3,57 +3,83 @@ from django.utils import timezone
 from rss_collector.models import Feed
 from rss_collector.services import process_feeds
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger("rss_collector")
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def fetch_feed(self, feed_id):
-    try:
-        feed = Feed.objects.get(id=feed_id)
-    except Feed.DoesNotExist:
-        msg = f"[{timezone.now()}] ❌ Feed {feed_id} not found"
-        logger.error(msg)
-        return {"feed_id": feed_id, "error": "Feed not found"}
-    
-    if not feed.should_fetch():
-        msg = f"[{timezone.now()}] ⏩ Skipped: {feed.url} (Not due for fetching)"
+@shared_task
+def fetch_feeds_in_batches(batch_size=100):
+    now = timezone.now()
+    due_feeds = Feed.objects.filter(next_fetch__lt=now).only("id")
+
+    feed_ids = list(due_feeds.values_list("id", flat=True))
+    total_feeds = len(feed_ids)
+
+    if not total_feeds:
+        msg = f"[{timezone.now()}] ⚠️ No feeds due for fetching."
         logger.info(msg)
-        return {
-            "feed_id": feed.id,
-            "feed_name": feed.name,
-            "skipped": True,
-            "reason": "Not due for fetching yet"
-        }
+        return
     
+    logger.info(f"🚀 Batch processing started at {now} for {total_feeds} feeds")
+    
+    batches = [feed_ids[i:i + batch_size] for i in range(0, total_feeds, batch_size)]
+    batch_count = len(batches)
+
+    for index, batch in enumerate(batches, start=1):
+        logger.info(f"📦 Dispatching batch {index}/{batch_count} ({len(batch)} feeds)")
+        process_batch_feeds.apply_async(args=[batch])
+    
+    end_time = timezone.now()
+    logger.info(
+        f"✅ All batches dispatched at {end_time}. "
+        f"Total Feeds: {total_feeds}, Total Batches: {batch_count}"
+    )
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=2)
+def process_batch_feeds(feed_ids):
     start_time = timezone.now()
-    logger.info(f"🚀 Started fetching: {feed.url} at {start_time}")
+    feeds = list(Feed.objects.filter(id__in=feed_ids))
 
+    max_workers = min(10, len(feeds))
+    total_processed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_single_feed, feed): feed.id for feed in feeds
+        }
+
+        for future in as_completed(futures):
+            feed_id = futures[future]
+            try:
+                future.result()
+                total_processed += 1
+            except Exception as e:
+                logger.exception(f"Feed {feed_id} failed: {e}")
+
+    end_time = timezone.now()
+    logger.info(
+        f"✅ Completed batch of {len(feeds)} feeds in "
+        f"{(end_time - start_time).total_seconds():.2f}s "
+        f"({total_processed} succeeded)"
+    )
+
+def process_single_feed(feed):
+    start_time = timezone.now()
+    logger.info(f" Started: {feed.name} ({feed.url})")
     try:
-        result = process_feeds([feed], max_entries=None, start_date=None, end_date=None, update_last_fetched=True)
-        details = result["details"][0] if result["details"] else {}
-        end_time = timezone.now()
-
+        result = process_feeds([feed], update_last_fetched=True)
+        details = result.get("details", [{}])[0]
         added = details.get("added", 0)
         updated = details.get("updated", 0)
 
         logger.info(
-            f" Completed: {feed.url}\n"
-            f" Start: {start_time} | End: {end_time} | Duration: {(end_time - start_time).total_seconds()}s\n"
-            f"Added: {added} | 🔁 Updated: {updated}"
+            f"✅ Completed: {feed.name} | Added: {added}, Updated: {updated} | "
+            f"Duration: {(timezone.now() - start_time).total_seconds():.2f}s"
         )
-
-        return {
-            "feed_id": feed_id,
-            "feed_name": feed.name,
-            "added": result["details"][0]["added"],
-            "updated": result["details"][0]["updated"],
-            "skipped": False,
-        }
     except Exception as e:
-        logger.exception(f"❌ Error processing feed {feed.url}: {e}")
-        raise self.retry(exc=e, countdown=10)
+        logger.exception(f"❌ Error processing feed {feed.name}: {e}")
 
 
+#not using currently
 @shared_task
 def fetch_all_feeds():
     """
@@ -83,40 +109,3 @@ def fetch_all_feeds():
     )
 
     return f"✅ {total_due} feeds fetched. New: {total_new}, Updated: {updated}"
-
-
-@shared_task
-def fetch_feeds_in_batches(batch_size=100):
-    """
-    Split feeds into batches
-    and process each batch concurrently using Celery group().
-    """
-
-    due_feeds = Feed.objects.all()
-    feed_ids = [feed.id for feed in due_feeds if feed.should_fetch()]
-    total_feeds = len(feed_ids)
-
-    if not total_feeds:
-        msg = f"[{timezone.now()}] ⚠️ No feeds due for fetching."
-        logger.info(msg)
-        return "⚠️ No feeds due for fetching."
-    
-    start_time = timezone.now()
-    logger.info(f"🚀 Batch processing started at {start_time} for {total_feeds} feeds")
-    
-    batches = [feed_ids[i:i + batch_size] for i in range(0, total_feeds, batch_size)]
-    batch_count = len(batches)
-
-    for index, batch in enumerate(batches, start=1):
-        logger.info(f"📦 Dispatching batch {index}/{batch_count} ({len(batch)} feeds)")
-        job = group(fetch_feed.s(feed_id) for feed_id in batch)
-        job.apply_async()
-        print(f"🚀 Dispatched batch {index}/{batch_count} ({len(batch)} feeds)")
-    
-    end_time = timezone.now()
-    logger.info(
-        f"✅ All batches dispatched at {end_time}. "
-        f"Total Feeds: {total_feeds}, Total Batches: {batch_count}"
-    )
-
-    return f"✅ {batch_count} batches dispatched for {total_feeds} feeds."
