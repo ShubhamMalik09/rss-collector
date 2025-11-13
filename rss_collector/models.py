@@ -32,10 +32,10 @@ class Feed(models.Model):
     def __str__(self):
         return self.name
     
-    def schedule_next_fetch(self):
-        """Set next_fetch based on refresh interval."""
-        self.next_fetch = timezone.now() + timedelta(minutes=self.call_frequency)
-        self.save(update_fields=["next_fetch"])
+    # def schedule_next_fetch(self):
+    #     """Set next_fetch based on refresh interval."""
+    #     self.next_fetch = timezone.now() + timedelta(minutes=self.call_frequency)
+    #     self.save(update_fields=["next_fetch"])
 
 class Article(models.Model):
     feed = models.ForeignKey(Feed, on_delete=models.CASCADE, related_name='articles')

@@ -1,5 +1,5 @@
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timedelta
 from django.db import IntegrityError
 from rss_collector.models import Feed, Article
 from rss_collector.utils import parse_feed
@@ -128,9 +128,10 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
             updated_count = len(updated_articles)
         
         if update_last_fetched:
-            feed.last_fetched = timezone.now()
-            feed.save(update_fields=["last_fetched"])
-            feed.schedule_next_fetch()
+            now = timezone.now()
+            feed.last_fetched = now
+            feed.next_fetch = now + timedelta(minutes=feed.call_frequency)
+            feed.save(update_fields=["last_fetched", "next_fetch"])
 
         feed_results.append({
             "feed": feed_name,
