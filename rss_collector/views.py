@@ -6,43 +6,6 @@ from .utils import parse_feed
 from .models import Article, Feed
 from datetime import datetime
 
-@api_view(['GET'])
-def test_feed_parser(request):
-    """
-    Example: /api/test-feed/?url=http://feeds.bbci.co.uk/news/rss.xml&max=3
-    """
-    feed_url = request.query_params.get('url')
-    max_entries = request.query_params.get('max')
-
-    if not feed_url:
-        return Response({"error": "Missing 'url' query parameter."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        max_entries = int(max_entries) if max_entries else None
-        articles = parse_feed(feed_url, max_entries=max_entries)
-        # Limit content length for easier viewing
-        for a in articles:
-            a['content'] = a['content'][:200] + "..." if len(a['content']) > 200 else a['content']
-        return Response({
-            "feed_url": feed_url,
-            "total_articles": len(articles),
-            "articles": articles
-        }, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['POST'])
-def reset_last_fetched(request):
-    """
-    Sets last_fetched = None for all Feed records.
-    Use only for admin/debugging purposes.
-    """
-    updated_count = Feed.objects.update(last_fetched=None)
-    return Response({
-        "status": "success",
-        "message": f"Reset last_fetched for {updated_count} feeds."
-    }, status=status.HTTP_200_OK)
-
 @api_view(['POST'])
 def fetch_feeds_view(request):
     """
@@ -117,4 +80,45 @@ def stored_articles_view(request):
     return Response({
         "count": len(data),
         "articles": data
+    }, status=status.HTTP_200_OK)
+
+
+# for testing purpose only
+@api_view(['GET'])
+def test_feed_parser(request):
+    """
+    Example: /api/test-feed/?url=http://feeds.bbci.co.uk/news/rss.xml&max=3
+    """
+    feed_url = request.query_params.get('url')
+    max_entries = request.query_params.get('max')
+
+    if not feed_url:
+        return Response({"error": "Missing 'url' query parameter."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        max_entries = int(max_entries) if max_entries else None
+        articles = parse_feed(feed_url, max_entries=max_entries)
+        # Limit content length for easier viewing
+        for a in articles:
+            a['content'] = a['content'][:200] + "..." if len(a['content']) > 200 else a['content']
+        return Response({
+            "feed_url": feed_url,
+            "total_articles": len(articles),
+            "articles": articles
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+#for testing purpose only
+@api_view(['POST'])
+def reset_last_fetched(request):
+    """
+    Sets last_fetched = None for all Feed records.
+    Use only for admin/debugging purposes.
+    """
+    updated_count = Feed.objects.update(last_fetched=None)
+    return Response({
+        "status": "success",
+        "message": f"Reset last_fetched for {updated_count} feeds."
     }, status=status.HTTP_200_OK)

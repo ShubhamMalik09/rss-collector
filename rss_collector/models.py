@@ -7,16 +7,16 @@ class Feed(models.Model):
     name = models.CharField(max_length=255)
     url = models.URLField(unique=True)
     last_fetched = models.DateTimeField(null=True, blank=True)
-    next_fetch = models.DateTimeField(null=True, blank=True)
+    next_fetch = models.DateTimeField(default=timezone.now, blank=False, null=False)
 
-    url_field = models.CharField(max_length=100, default="link")
-    title_field = models.CharField(max_length=100, default="title")
-    description_field = models.CharField(max_length=100, default="description")
-    content_field = models.CharField(max_length=100, default="content:encoded")
-    author_field = models.CharField(max_length=100, default="dc:creator")
-    published_field = models.CharField(max_length=100, default="pubDate")
-    categories_field = models.CharField(max_length=100, default="category")
-    date_format = models.CharField(max_length=100,default="%a, %d %b %Y %H:%M:%S %z")
+    url_field = models.CharField(max_length=100, null=True, blank=True, default="link")
+    title_field = models.CharField(max_length=100, null=True, blank=True, default="title")
+    description_field = models.CharField(max_length=100, null=True, blank=True, default="description")
+    content_field = models.CharField(max_length=100, null=True, blank=True, default="content:encoded")
+    author_field = models.CharField(max_length=100, null=True, blank=True, default="dc:creator")
+    published_field = models.CharField(max_length=100, null=True, blank=True, default="pubDate")
+    categories_field = models.CharField(max_length=100, null=True, blank=True, default="category")
+    date_format = models.CharField(max_length=100, null=True, blank=True, default="%a, %d %b %Y %H:%M:%S %z")
 
     parser_type = models.CharField(
         max_length=50,

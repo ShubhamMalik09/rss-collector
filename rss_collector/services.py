@@ -1,9 +1,10 @@
 from django.utils import timezone
 from datetime import datetime
-from django.db import transaction, IntegrityError
+from django.db import IntegrityError
 from rss_collector.models import Feed, Article
 from rss_collector.utils import parse_feed
 
+# common for both celery and fetch_feeds_view
 def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, update_last_fetched=False):
     """
     Common logic for processing a list of feed objects or feed-like dicts.
@@ -57,7 +58,8 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
 
         entry_urls = [entry.get("url") for entry in entries if entry.get("url")]
         existing_articles = Article.objects.filter(url__in=entry_urls).all()
-        existing_urls = [a.url for a in existing_articles]
+        existing_articles_map = { a.url: a for a in existing_articles}
+        existing_urls = set(existing_articles_map.keys())
 
         new_entries = [e for e in entries if e.get("url") not in existing_urls]
         existing_entries = [e for e in entries if e.get("url") in existing_urls]
@@ -87,11 +89,7 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
         for entry in existing_entries:
             url = entry.get("url")
 
-            article = None
-            for a in existing_articles:
-                if a.url == url:
-                    article = a
-                    break
+            article = existing_articles_map.get(url)
             if not article:
                 continue
 
@@ -99,8 +97,12 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
 
             def has_changed(field, new_value):
                 old_value = getattr(article, field, None)
+                if isinstance(old_value, datetime) and isinstance(new_value, datetime):
+                    return new_value > old_value
+
                 if isinstance(old_value, list) and isinstance(new_value, list):
                     return old_value != new_value
+    
                 return (old_value or "").strip() != (new_value or "").strip()
 
             for field, new_value in {
@@ -109,15 +111,11 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
                 "authors": entry.get("authors", []),
                 "categories": entry.get("categories", []),
                 "meta_keywords": entry.get("meta_keywords", []),
+                "published_at": entry.get("published"),
             }.items():
                 if has_changed(field, new_value):
                     setattr(article, field, new_value)
                     changed = True
-
-            published = entry.get("published")
-            if published and (not article.published_at or published > article.published_at):
-                article.published_at = published
-                changed = True
 
             if changed:
                 updated_articles.append(article)
@@ -147,6 +145,8 @@ def process_feeds(feeds, max_entries=None, start_date=None, end_date=None, updat
         "details": feed_results
     }
 
+
+# using for fetch_feed_view
 def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_date=None, update_last_fetched=False):
     """
     Fetch feeds stored in DB and process them via process_feeds().
@@ -163,6 +163,7 @@ def fetch_all_feeds(limit_feeds=None, max_entries=None, start_date=None, end_dat
         update_last_fetched=update_last_fetched
     )
 
+# using for fetch_feed_view
 def fetch_custom_feeds(urls, max_entries=None, start_date=None, end_date=None):
     """
     Fetch custom list of RSS URLs provided by user and process via process_feeds().

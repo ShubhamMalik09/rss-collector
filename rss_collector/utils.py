@@ -1,17 +1,13 @@
-import feedparser
 from newspaper import Article as NewspaperArticle
 from datetime import datetime
-import time
 from django.utils import timezone
 import requests
-import re
 from bs4 import BeautifulSoup
 from markdownify import markdownify as html_to_md
 
-def clean_to_markdown(content: str) -> str:
+def clean_to_markdown(content):
     """
-    Converts HTML or plain text into clean Markdown format.
-    Ensures consistent storage.
+    Converts HTML or plain text into Markdown.
     """
     if not content:
         return ""
@@ -30,12 +26,17 @@ def parse_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_d
 
     if parser_type == "generic":
         return parse_generic_feed(feed, last_fetched, max_entries, start_date, end_date)
+    
+    #not currently in use
     elif parser_type == 'json_feed':
         return parse_json_feed(feed, last_fetched, max_entries, start_date, end_date)
+    
+    #not currently in use
     elif parser_type == "article":
         return parse_html_feed(feed, last_fetched, max_entries, start_date, end_date)
     else:
         raise ValueError(f"Unknown parser type: {parser_type}")
+
 
 def parse_generic_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_date=None):
 
@@ -63,7 +64,7 @@ def parse_generic_feed(feed, last_fetched=None, max_entries=None, start_date=Non
 
     url_tag = feed.url_field
     title_tag = feed.title_field
-    desc_tag = getattr(feed, "description_field", None) 
+    desc_tag = feed.description_field
     content_tag = feed.content_field 
     author_tag = feed.author_field
     published_tag = feed.published_field
@@ -148,6 +149,7 @@ def parse_generic_feed(feed, last_fetched=None, max_entries=None, start_date=Non
 def parse_html_feed(feed, last_fetched=None, max_entries=None, start_date=None, end_date=None):
 
     date_format = feed.date_format or "%Y-%m-%dT%H:%M:%S%z"
+    extract_full_content = getattr(feed, "extract_full_content", False)
 
     try:
         response = requests.get(feed.url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
@@ -156,7 +158,7 @@ def parse_html_feed(feed, last_fetched=None, max_entries=None, start_date=None, 
     except Exception as e:
         print(f"[parse_html_feed] Failed to fetch {feed.url}: {e}")
         return []
-    
+
     soup = BeautifulSoup(html_text, "html.parser")
 
     article_selector = getattr(feed, "article_selector", None)
@@ -164,69 +166,82 @@ def parse_html_feed(feed, last_fetched=None, max_entries=None, start_date=None, 
         print(f"[parse_html_feed] Missing 'article_selector' for {feed.url}")
         return []
 
-    article_blocks = soup.select(article_selector)
-    if not article_blocks:
+    blocks = soup.select(article_selector)
+    if not blocks:
         print(f"[parse_html_feed] No article blocks found for {feed.url}")
         return []
     
     if max_entries:
-        article_blocks = article_blocks[:max_entries]
+        blocks = blocks[:max_entries]
 
     results = []
 
-    url_selector = getattr(feed, "url_field", None)
-    title_selector = getattr(feed, "title_field", None)
-    content_selector = getattr(feed, "content_field", None)
-    author_selector = getattr(feed, "author_field", None)
-    published_selector = getattr(feed, "published_field", None)
-    categories_selector = getattr(feed, "categories_field", None)
+    url_sel = feed.url_field
+    title_sel = feed.title_field
+    desc_sel = feed.description_field
+    content_sel = feed.content_field
+    author_sel = feed.author_field
+    published_sel = feed.published_field
+    categories_sel = feed.categories_field
 
-    for block in article_blocks:
+    for block in blocks:
         try:
             url = ""
-            if url_selector:
-                el = block.select_one(url_selector)
+            if url_sel:
+                el = block.select_one(url_sel)
                 if el:
                     url = el.get("href") or el.get("content") or el.get_text(strip=True)
 
+            if not url:
+                continue
+
             title = ""
-            if title_selector:
-                el = block.select_one(title_selector)
+            if title_sel:
+                el = block.select_one(title_sel)
                 if el:
                     title = el.get("content") or el.get_text(strip=True)
             
-            author = ""
-            if author_selector:
-                el = block.select_one(author_selector)
+            description = ""
+            if desc_sel:
+                el = block.select_one(desc_sel)
                 if el:
-                    author = el.get("content") or el.get_text(strip=True)
+                    description = el.get_text(strip=True)
             
             content = ""
-            if content_selector:
-                content_parts = []
-                for el in block.select(content_selector):
-                    text = el.get_text(strip=True)
-                    if text:
-                        content_parts.append(text)
-                content = "\n".join(content_parts).strip()
+            if content_sel:
+                parts = []
+                for el in block.select(content_sel):
+                    txt = el.get_text(strip=True)
+                    if txt:
+                        parts.append(txt)
+                content = "\n".join(parts).strip()
+
+            if not content:
+                content = description
             
+            author = ""
+            if author_sel:
+                el = block.select_one(author_sel)
+                if el:
+                    author = el.get("content") or el.get_text(strip=True)
+
+            authors = [author] if author else []
+
             categories = []
-            if categories_selector:
-                cat_els = block.select(categories_selector)
-                if cat_els:
-                    categories = list({
-                        c.get_text(strip=True)
-                        for c in cat_els if c.get_text(strip=True)
-                    })
+            if categories_sel:
+                for c in block.select(categories_sel):
+                    text = c.get_text(strip=True)
+                    if text:
+                        categories.append(text)
             
             published = None
-            if published_selector:
-                el = block.select_one(published_selector)
+            if published_sel:
+                el = block.select_one(published_sel)
                 if el:
-                    pub_raw = el.get("content") or el.get_text(strip=True)
-                    if pub_raw:
+                    raw = el.get("content") or el.get_text(strip=True)
+                    if raw:
                         try:
-                            published = datetime.strptime(pub_raw, date_format)
+                            published = datetime.strptime(raw.strip(), date_format)
                             if timezone.is_naive(published):
                                 published = timezone.make_aware(published)
                         except Exception:
@@ -239,16 +254,40 @@ def parse_html_feed(feed, last_fetched=None, max_entries=None, start_date=None, 
             if last_fetched and not start_date and published and published <= last_fetched:
                 continue
 
-            summary = content[:300] + "..." if len(content) > 300 else content
+            meta_keywords = []
+            if extract_full_content:
+                try:
+                    art = NewspaperArticle(url)
+                    art.download()
+                    art.parse()
+
+                    if art.text and len(art.text) > len(content):
+                        content = art.text.strip()
+
+                    if art.authors:
+                        authors = art.authors
+
+                    try:
+                        art.nlp()
+                        meta_keywords = art.keywords or []
+                    except Exception:
+                        pass
+
+                except Exception:
+                    pass
+            
+            content = clean_to_markdown(content)
+
+            summary = description or content[:300] + ("..." if len(content) > 300 else "")
 
             results.append({
                 "url": url,
                 "title": title,
                 "summary": summary,
                 "content": content,
-                "authors": [author] if author else [],
+                "authors": authors,
                 "categories": categories,
-                "meta_keywords": categories,
+                "meta_keywords": meta_keywords or categories,
                 "published": published,
             })
 
